@@ -46,6 +46,8 @@ static struct termios old_term;
 
 static bool handle_telnet;
 
+static int show_timestamp;
+
 static void usage(void)
 {
 	fprintf(stderr, "Usage: %s [-t] <port>\n", prog_name);
@@ -154,6 +156,50 @@ static bool write_buf(int fd, const void *buf, size_t count)
 	return true;
 }
 
+#include <time.h>
+static ssize_t write_ts(int fd)
+{
+	ssize_t res=0;
+	time_t now;
+	char ts_buf[100];
+
+	time(&now);
+	sprintf(ts_buf, "%s", ctime(&now));
+
+	// replace the last character with space
+	ts_buf[strlen(ts_buf)-1] = ' ';
+
+	res = write(fd, ts_buf, strlen(ts_buf));
+	return res;
+}
+
+static bool write_with_timestamp(int fd, void *buf, size_t count)
+{
+	char *str;
+	ssize_t res;
+	int i;
+	static int print_prefix_ts=1;
+
+	str = buf;
+	for (i = 0; i < count; i++, str++) {
+		if (print_prefix_ts) {
+			print_prefix_ts = 0;
+			res = write_ts(fd);
+			if (res == -1)
+				return false;
+		}
+
+		if (*str == '\n')
+			print_prefix_ts = 1;
+
+		res = write(fd, str, 1);
+		if (res == -1)
+			return false;
+	}
+
+	return true;
+}
+
 #define TELNET_IAC		0xff
 #define TELNET_DO		0xfd
 #define TELNET_WILL		0xfb
@@ -255,8 +301,12 @@ static void serve_fd(int fd)
 			}
 			handle_telnet_codes(fd, buf, &n);
 
-			if (!write_buf(STDOUT_FILENO, buf, n))
+			if (show_timestamp) {
+				if (!write_with_timestamp(STDOUT_FILENO, buf, n))
+					err(1, "write_with_timestamp stdout");
+			} else if (!write_buf(STDOUT_FILENO, buf, n)) {
 				err(1, "write_buf stdout");
+			}
 		}
 	}
 }
@@ -272,10 +322,14 @@ int main(int argc, char *argv[])
 		port = argv[1];
 		break;
 	case 3:
-		if (strcmp(argv[1], "-t") != 0)
+		if (strcmp(argv[1], "-t") == 0) {
+			have_handle_telnet_option = true;
+			port = argv[2];
+		} else if (strcmp(argv[1], "-ts") == 0) {
+			show_timestamp = 1;
+			port = argv[2];
+		} else
 			usage();
-		have_handle_telnet_option = true;
-		port = argv[2];
 		break;
 	default:
 		usage();
